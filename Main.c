@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <windows.h>
+#include <emmintrin.h>
 #include <stdint.h>
 #include "Main.h"
 
@@ -19,6 +20,20 @@ int WinMain(HINSTANCE instance, HINSTANCE previousInstance, LPSTR commandLine, i
     int64_t elapsedMicroseconds;
     int64_t elapsedMicrosecondsAccumulatorRaw = 0;
     int64_t elapsedMicrosecondsAccumulatorCooked = 0;
+
+    HMODULE NtDllModuleHandle;
+
+    if ((NtDllModuleHandle = GetModuleHandleA("ntdll.dll")) == NULL) {
+        MessageBoxA(NULL, "Couldn't find ntdll.dll!", "Error!", MB_ICONEXCLAMATION | MB_OK);
+        goto Exit;
+    }
+
+    if ((NtQueryTimerResolution = (_NtQueryTimerResolution)GetProcAddress(NtDllModuleHandle, "NtQueryTimerResolution")) == NULL) {
+        MessageBoxA(NULL, "Couldn't find NtQueryTimerResolution function in ntdll.dll!", "Error!", MB_ICONEXCLAMATION | MB_OK);
+        goto Exit;
+    }
+
+    NtQueryTimerResolution(&gPerformanceData.minimumTimerResolution, &gPerformanceData.maximumnTimerResolution, &gPerformanceData.currentTimerResolution);
 
     if (GameIsAlreadyRunning() == TRUE) {
         MessageBoxA(NULL, "Another instance of this program is running!", "Error!", MB_ICONEXCLAMATION | MB_OK);
@@ -66,13 +81,15 @@ int WinMain(HINSTANCE instance, HINSTANCE previousInstance, LPSTR commandLine, i
         elapsedMicrosecondsAccumulatorRaw += elapsedMicroseconds;
 
         while (elapsedMicroseconds <= TARGET_MICROSECONDS_PER_FRAME) {
-            Sleep(0);
-
             elapsedMicroseconds = frameEnd - frameStart;
             elapsedMicroseconds *= 1000000;
             elapsedMicroseconds /= gPerformanceData.perfFrequency;
 
             QueryPerformanceCounter((LARGE_INTEGER*)&frameEnd);
+
+            if (elapsedMicroseconds < ((int64_t)TARGET_MICROSECONDS_PER_FRAME - gPerformanceData.currentTimerResolution)) {
+            //    Sleep(1); // I get 32 fps with this set. With this commented out I am getting 60 fps.
+            }
         }
 
         elapsedMicrosecondsAccumulatorCooked += elapsedMicroseconds;
@@ -188,15 +205,9 @@ void ProcessPlayerInput(void) {
 }
 
 void RenderFrameGraphics(void) {
-    PIXEL32 pixel = {0};
-    pixel.blue = 0x7f;
-    pixel.green = 0;
-    pixel.red = 0;
-    pixel.alpha = 0xff;
+    __m128i quadPixel = { 0x7f, 0x00, 0x00, 0xff, 0x7f, 0x00, 0x00, 0xff, 0x7f, 0x00, 0x00, 0xff, 0x7f, 0x00, 0x00, 0xff };
 
-    for (int i = 0; i < GAME_RES_WIDTH * GAME_RES_HEIGHT; i++) {
-        memcpy_s((PIXEL32*)gBackBuffer.memory + i, sizeof(PIXEL32), &pixel, sizeof(PIXEL32));
-    }
+    ClearScreen(quadPixel);
 
     int32_t screenX = 25;
     int32_t screenY = 25;
@@ -216,11 +227,25 @@ void RenderFrameGraphics(void) {
     if (gPerformanceData.displayDebugInfo) {
         SelectObject(deviceContext, (HFONT) GetStockObject(ANSI_FIXED_FONT));
         char DebugTextBuffer[64] = { 0 };
-        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "FPS Raw:    %.01f", gPerformanceData.rawFPSAverage);
+        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "FPS Raw:        %.01f", gPerformanceData.rawFPSAverage);
         TextOutA(deviceContext,10 , 10, DebugTextBuffer, (int)strlen(DebugTextBuffer));
-        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "FPS Cooked: %.01f", gPerformanceData.cookedFPSAverage);
+        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "FPS Cooked:     %.01f", gPerformanceData.cookedFPSAverage);
         TextOutA(deviceContext,10 , 23, DebugTextBuffer, (int)strlen(DebugTextBuffer));
+
+        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "Min. Timer Res: %.02f", gPerformanceData.minimumTimerResolution / 10000.0f);
+        TextOutA(deviceContext,10 , 36, DebugTextBuffer, (int)strlen(DebugTextBuffer));
+        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "Max. Timer Res: %.02f", gPerformanceData.maximumnTimerResolution / 10000.0f);
+        TextOutA(deviceContext,10 , 49, DebugTextBuffer, (int)strlen(DebugTextBuffer));
+        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "Cur. Timer Res: %.02f", gPerformanceData.currentTimerResolution / 10000.0f);
+        TextOutA(deviceContext,10 , 62, DebugTextBuffer, (int)strlen(DebugTextBuffer));
+
     }
 
     ReleaseDC(gGameWindow, deviceContext);
+}
+
+__forceinline void ClearScreen(_In_ __m128i color) {
+    for (int i = 0; i < GAME_RES_WIDTH * GAME_RES_HEIGHT; i+=4) {
+        _mm_store_si128((PIXEL32*)gBackBuffer.memory + i, color);
+    }
 }

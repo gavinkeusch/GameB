@@ -8,6 +8,9 @@
 #define CALCULATE_AVG_FPS_EVERY_X_FRAMES 100
 #define TARGET_MICROSECONDS_PER_FRAME 16667
 
+typedef LONG(NTAPI* _NtQueryTimerResolution) (OUT PULONG MinimumResolution, OUT PULONG MaximumResolution, OUT PULONG CurrentResolution);
+_NtQueryTimerResolution NtQueryTimerResolution;
+
 typedef struct GAMEBITMAP {
     BITMAPINFO bitmapinfo;
     void* memory;
@@ -29,6 +32,9 @@ typedef struct PERFORMANCEDATA {
     int32_t monitorWidth;
     int32_t monitorHeight;
     BOOL displayDebugInfo;
+    LONG minimumTimerResolution;
+    LONG maximumnTimerResolution;
+    LONG currentTimerResolution;
 } PERFORMANCEDATA;
 
 LRESULT CALLBACK MainWindowProc(_In_ HWND windowHandle, _In_ UINT message, _In_ WPARAM wParam, _In_ LPARAM lParam);
@@ -36,3 +42,4 @@ DWORD CreateMainGameWindow(void);
 BOOL GameIsAlreadyRunning(void);
 void ProcessPlayerInput(void);
 void RenderFrameGraphics(void);
+void ClearScreen(_In_ __m128i color);
