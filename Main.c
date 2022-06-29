@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <windows.h>
+#include <psapi.h>
 #include <emmintrin.h>
 #include <stdint.h>
 #include "Main.h"
@@ -7,7 +8,8 @@
 HWND gGameWindow;
 BOOL gGameIsRunning;
 GAMEBITMAP gBackBuffer;
-PERFORMANCEDATA gPerformanceData;
+GAMEPERFORMANCEDATA gPerformanceData;
+PLAYER gPlayer;
 
 int WinMain(HINSTANCE instance, HINSTANCE previousInstance, LPSTR commandLine, int showCommand) {
 	UNREFERENCED_PARAMETER(previousInstance);
@@ -33,7 +35,9 @@ int WinMain(HINSTANCE instance, HINSTANCE previousInstance, LPSTR commandLine, i
         goto Exit;
     }
 
-    NtQueryTimerResolution(&gPerformanceData.minimumTimerResolution, &gPerformanceData.maximumnTimerResolution, &gPerformanceData.currentTimerResolution);
+    NtQueryTimerResolution(&gPerformanceData.minimumTimerResolution, &gPerformanceData.maximumTimerResolution, &gPerformanceData.currentTimerResolution);
+
+    GetSystemInfo(&gPerformanceData.systemInfo);
 
     if (GameIsAlreadyRunning() == TRUE) {
         MessageBoxA(NULL, "Another instance of this program is running!", "Error!", MB_ICONEXCLAMATION | MB_OK);
@@ -59,6 +63,11 @@ int WinMain(HINSTANCE instance, HINSTANCE previousInstance, LPSTR commandLine, i
         goto Exit;
     }
 
+    memset(gBackBuffer.memory, 0x7f, GAME_DRAWING_AREA_MEMORY_SIZE);
+
+    gPlayer.worldPosX = 30;
+    gPlayer.worldPosY = 30;
+
     gGameIsRunning = TRUE;
 
     while (gGameIsRunning) {
@@ -80,26 +89,46 @@ int WinMain(HINSTANCE instance, HINSTANCE previousInstance, LPSTR commandLine, i
         gPerformanceData.totalFramesRendered++;
         elapsedMicrosecondsAccumulatorRaw += elapsedMicroseconds;
 
-        while (elapsedMicroseconds <= TARGET_MICROSECONDS_PER_FRAME) {
+        while (elapsedMicroseconds < TARGET_MICROSECONDS_PER_FRAME) {
             elapsedMicroseconds = frameEnd - frameStart;
             elapsedMicroseconds *= 1000000;
             elapsedMicroseconds /= gPerformanceData.perfFrequency;
 
             QueryPerformanceCounter((LARGE_INTEGER*)&frameEnd);
 
-            if (elapsedMicroseconds < ((int64_t)TARGET_MICROSECONDS_PER_FRAME - gPerformanceData.currentTimerResolution)) {
-            //    Sleep(1); // I get 32 fps with this set. With this commented out I am getting 60 fps.
+            if (elapsedMicroseconds < ((int64_t)TARGET_MICROSECONDS_PER_FRAME - (gPerformanceData.currentTimerResolution * 0.1f))) {
+//                Sleep(1);
             }
         }
 
         elapsedMicrosecondsAccumulatorCooked += elapsedMicroseconds;
 
         if ((gPerformanceData.totalFramesRendered % CALCULATE_AVG_FPS_EVERY_X_FRAMES) == 0) {
+            GetSystemTimeAsFileTime(&gPerformanceData.currentSystemTime);
+            GetProcessTimes(GetCurrentProcess(),
+                            &gPerformanceData.processCreationTime,
+                            &gPerformanceData.processExitTime,
+                            &gPerformanceData.currentKernelCPUTime,
+                            &gPerformanceData.currentUserCPUTTime);
+
+            gPerformanceData.cpuPercent = (gPerformanceData.currentKernelCPUTime - gPerformanceData.previousKernelCPUTTime) +
+                    (gPerformanceData.currentUserCPUTTime - gPerformanceData.previousUserCPUTime);
+            gPerformanceData.cpuPercent /= (gPerformanceData.currentSystemTime - gPerformanceData.previousSystemTime);
+            gPerformanceData.cpuPercent /= gPerformanceData.systemInfo.dwNumberOfProcessors;
+            gPerformanceData.cpuPercent *= 100;
+
+            GetProcessHandleCount(GetCurrentProcess(), &gPerformanceData.handleCount);
+            K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&gPerformanceData.memInfo, sizeof(gPerformanceData.memInfo));
+
             gPerformanceData.rawFPSAverage = 1.0f / (((float)elapsedMicrosecondsAccumulatorRaw / CALCULATE_AVG_FPS_EVERY_X_FRAMES) * 0.000001f);
             gPerformanceData.cookedFPSAverage = 1.0f / (((float)elapsedMicrosecondsAccumulatorCooked / CALCULATE_AVG_FPS_EVERY_X_FRAMES) * 0.000001f);
 
             elapsedMicrosecondsAccumulatorRaw = 0;
             elapsedMicrosecondsAccumulatorCooked = 0;
+
+            gPerformanceData.previousKernelCPUTTime = gPerformanceData.currentKernelCPUTime;
+            gPerformanceData.previousUserCPUTime = gPerformanceData.currentUserCPUTTime;
+            gPerformanceData.previousSystemTime = gPerformanceData.currentSystemTime;
         }
     }
 
@@ -191,7 +220,16 @@ BOOL GameIsAlreadyRunning(void) {
 void ProcessPlayerInput(void) {
     int16_t escapeKeyIsDown = GetAsyncKeyState(VK_ESCAPE);
     int16_t debugKeyIsDown = GetAsyncKeyState(VK_F1);
+    int16_t leftKeyIsDown = GetAsyncKeyState(VK_LEFT) | GetAsyncKeyState('A');
+    int16_t rightKeyIsDown = GetAsyncKeyState(VK_RIGHT) | GetAsyncKeyState('D');
+    int16_t upKeyIsDown = GetAsyncKeyState(VK_UP) | GetAsyncKeyState('W');
+    int16_t downKeyIsDown = GetAsyncKeyState(VK_DOWN) | GetAsyncKeyState('S');
+
     static int16_t debugKeyWasDown;
+    static int16_t leftKeyWasDown;
+    static int16_t rightKeyWasDown;
+    static int16_t upKeyWasDown;
+    static int16_t downKeyWasDown;
 
     if (escapeKeyIsDown) {
         SendMessageA(gGameWindow, WM_CLOSE, 0, 0);
@@ -201,16 +239,51 @@ void ProcessPlayerInput(void) {
         gPerformanceData.displayDebugInfo = !gPerformanceData.displayDebugInfo;
     }
 
+    if (leftKeyIsDown) {
+        if (gPlayer.worldPosX > 0) {
+            gPlayer.worldPosX--;
+        }
+    }
+
+    if (rightKeyIsDown) {
+        if (gPlayer.worldPosX < GAME_RES_WIDTH - 16) {
+            gPlayer.worldPosX++;
+        }
+    }
+
+    if (downKeyIsDown) {
+        if (gPlayer.worldPosY < GAME_RES_HEIGHT - 16) {
+            gPlayer.worldPosY++;
+        }
+    }
+
+    if (upKeyIsDown) {
+        if (gPlayer.worldPosY > 0) {
+            gPlayer.worldPosY--;
+        }
+
+    }
+
     debugKeyWasDown = debugKeyIsDown;
+    leftKeyWasDown = leftKeyIsDown;
+    rightKeyWasDown = rightKeyIsDown;
+    upKeyWasDown = upKeyIsDown;
+    downKeyWasDown = downKeyIsDown;
 }
 
 void RenderFrameGraphics(void) {
+#ifdef SIMD
     __m128i quadPixel = { 0x7f, 0x00, 0x00, 0xff, 0x7f, 0x00, 0x00, 0xff, 0x7f, 0x00, 0x00, 0xff, 0x7f, 0x00, 0x00, 0xff };
 
-    ClearScreen(quadPixel);
+    ClearScreen(&quadPixel);
+#else
+    PIXEL32 pixel = { 0x7f, 0x00, 0x00, 0xff };
 
-    int32_t screenX = 25;
-    int32_t screenY = 25;
+    ClearScreen(&pixel);
+#endif
+
+    int32_t screenX = gPlayer.worldPosX;
+    int32_t screenY = gPlayer.worldPosY;
     int32_t startingScreenPixel = ((GAME_RES_WIDTH * GAME_RES_HEIGHT) - GAME_RES_WIDTH) - (GAME_RES_WIDTH * screenY) + screenX;
 
     for (int32_t y = 0;y < 16; y++) {
@@ -227,25 +300,41 @@ void RenderFrameGraphics(void) {
     if (gPerformanceData.displayDebugInfo) {
         SelectObject(deviceContext, (HFONT) GetStockObject(ANSI_FIXED_FONT));
         char DebugTextBuffer[64] = { 0 };
-        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "FPS Raw:        %.01f", gPerformanceData.rawFPSAverage);
+        sprintf_s(DebugTextBuffer, sizeof(DebugTextBuffer), "FPS Raw:        %.01f", gPerformanceData.rawFPSAverage);
         TextOutA(deviceContext,10 , 10, DebugTextBuffer, (int)strlen(DebugTextBuffer));
-        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "FPS Cooked:     %.01f", gPerformanceData.cookedFPSAverage);
+        sprintf_s(DebugTextBuffer, sizeof(DebugTextBuffer), "FPS Cooked:     %.01f  ", gPerformanceData.cookedFPSAverage);
         TextOutA(deviceContext,10 , 23, DebugTextBuffer, (int)strlen(DebugTextBuffer));
 
-        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "Min. Timer Res: %.02f", gPerformanceData.minimumTimerResolution / 10000.0f);
+        sprintf_s(DebugTextBuffer, sizeof(DebugTextBuffer), "Min. Timer Res: %.02f ", gPerformanceData.minimumTimerResolution / 10000.0f);
         TextOutA(deviceContext,10 , 36, DebugTextBuffer, (int)strlen(DebugTextBuffer));
-        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "Max. Timer Res: %.02f", gPerformanceData.maximumnTimerResolution / 10000.0f);
+        sprintf_s(DebugTextBuffer, sizeof(DebugTextBuffer), "Max. Timer Res: %.02f  ", gPerformanceData.maximumTimerResolution / 10000.0f);
         TextOutA(deviceContext,10 , 49, DebugTextBuffer, (int)strlen(DebugTextBuffer));
-        sprintf_s(DebugTextBuffer, _countof(DebugTextBuffer), "Cur. Timer Res: %.02f", gPerformanceData.currentTimerResolution / 10000.0f);
+        sprintf_s(DebugTextBuffer, sizeof(DebugTextBuffer), "Cur. Timer Res: %.02f  ", gPerformanceData.currentTimerResolution / 10000.0f);
         TextOutA(deviceContext,10 , 62, DebugTextBuffer, (int)strlen(DebugTextBuffer));
+
+        sprintf_s(DebugTextBuffer, sizeof(DebugTextBuffer), "Handles:        %lu   ", gPerformanceData.handleCount);
+        TextOutA(deviceContext,10 , 75, DebugTextBuffer, (int)strlen(DebugTextBuffer));
+        sprintf_s(DebugTextBuffer, sizeof(DebugTextBuffer), "Memory:       %lu KB ", gPerformanceData.memInfo.PrivateUsage / 1024);
+        TextOutA(deviceContext,10 , 88, DebugTextBuffer, (int)strlen(DebugTextBuffer));
+
+        sprintf_s(DebugTextBuffer, sizeof(DebugTextBuffer), "CPU Perc.:    %.02f %% ", gPerformanceData.cpuPercent);
+        TextOutA(deviceContext,10 , 101, DebugTextBuffer, (int)strlen(DebugTextBuffer));
 
     }
 
     ReleaseDC(gGameWindow, deviceContext);
 }
 
-__forceinline void ClearScreen(_In_ __m128i color) {
-    for (int i = 0; i < GAME_RES_WIDTH * GAME_RES_HEIGHT; i+=4) {
-        _mm_store_si128((PIXEL32*)gBackBuffer.memory + i, color);
+#ifdef SIMD
+__forceinline void ClearScreen(_In_ __m128i* color) {
+    for (int i = 0; i < GAME_RES_WIDTH * GAME_RES_HEIGHT; i += 4) {
+        _mm_store_si128((PIXEL32*) gBackBuffer.memory + i, *color);
     }
 }
+#else
+__forceinline void ClearScreen(_In_ PIXEL32* pixel) {
+    for (int i = 0; i < GAME_RES_WIDTH * GAME_RES_HEIGHT; i++) {
+        memcpy((PIXEL32*)gBackBuffer.memory + i, pixel, sizeof(PIXEL32));
+    }
+}
+#endif
